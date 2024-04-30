@@ -1,50 +1,65 @@
-from collections import OrderedDict
 import torch
 import torch.nn as nn
 
-class UNet(nn.Module):
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, features):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, features, kernel_size=3, padding=1, bias=False)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(features, features, kernel_size=3, padding=1, bias=False)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out += residual
+        out = self.relu(out)
+        return out
+
+class resUNet(nn.Module):
     def __init__(self, in_channels=3, out_channels=1, init_features=32):
         super(UNet, self).__init__()
 
         features = init_features
-        self.encoder1 = UNet._block(in_channels, features, name="enc1")
+        self.encoder1 = ResidualBlock(in_channels, features)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.encoder2 = UNet._block(features, features * 2, name="enc2")
+        self.encoder2 = ResidualBlock(features, features * 2)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.encoder3 = UNet._block(features * 2, features * 4, name="enc3")
+        self.encoder3 = ResidualBlock(features * 2, features * 4)
         self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.encoder4 = UNet._block(features * 4, features * 8, name="enc4")
+        self.encoder4 = ResidualBlock(features * 4, features * 8)
         self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.bottleneck = UNet._block(features * 8, features * 16, name="bottleneck")
+        self.bottleneck = ResidualBlock(features * 8, features * 16)
 
         self.upconv4 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             nn.Conv2d(features * 16, features * 8, kernel_size=3, padding=1),
             nn.BatchNorm2d(features * 8)
         )
-        self.decoder4 = UNet._block((features * 8) * 2, features * 8, name="dec4")
+        self.decoder4 = ResidualBlock((features * 8) * 2, features * 8)
         self.upconv3 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             nn.Conv2d(features * 8, features * 4, kernel_size=3, padding=1),
             nn.BatchNorm2d(features * 4)
         )
 
-        self.decoder3 = UNet._block((features * 4) * 2, features * 4, name="dec3")
+        self.decoder3 = ResidualBlock((features * 4) * 2, features * 4)
         self.upconv2 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             nn.Conv2d(features * 4, features * 2, kernel_size=3, padding=1),
             nn.BatchNorm2d(features * 2)
         )
 
-        self.decoder2 = UNet._block((features * 2) * 2, features * 2, name="dec2")
+        self.decoder2 = ResidualBlock((features * 2) * 2, features * 2)
         self.upconv1 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
             nn.Conv2d(features * 2, features, kernel_size=3, padding=1),
             nn.BatchNorm2d(features)
         )
 
-        self.decoder1 = UNet._block(features * 2, features, name="dec1")
+        self.decoder1 = ResidualBlock(features * 2, features)
 
         self.conv = nn.Conv2d(
             in_channels=features, out_channels=out_channels, kernel_size=1
@@ -73,36 +88,3 @@ class UNet(nn.Module):
         out = self.conv(dec1)
         out = torch.sigmoid(out)
         return out
-
-    @staticmethod
-    def _block(in_channels, features, name):
-        return nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        name + "conv1",
-                        nn.Conv2d(
-                            in_channels=in_channels,
-                            out_channels=features,
-                            kernel_size=3,
-                            padding=1,
-                            bias=False,
-                        ),
-                    ),
-                    (name + "norm1", nn.BatchNorm2d(features)),
-                    (name + "relu1", nn.ReLU(inplace=True)),
-                    (
-                        name + "conv2",
-                        nn.Conv2d(
-                            in_channels=features,
-                            out_channels=features,
-                            kernel_size=3,
-                            padding=1,
-                            bias=False,
-                        ),
-                    ),
-                    (name + "norm2", nn.BatchNorm2d(features)),
-                    (name + "relu2", nn.ReLU(inplace=True)),
-                ]
-            )
-        )

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import random_split, DataLoader
+from torch.utils.data import Subset, DataLoader
 from torchvision.utils import make_grid
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -13,17 +13,12 @@ from UNet import UNet
 
 MODEL = 'UNet'
 EPOCH = 1000
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 BATCH_SIZE = 8
 IMAGE_SIZE = (400, 400)
 VAL_SPILIT = 0.1
 TEST_SPLIT = 0.1
-RANDOM_SEED = 42
 DEVICE = 'cuda'
-
-torch.manual_seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-random.seed(RANDOM_SEED)
 
 ##################################################
 # Dataset
@@ -32,12 +27,20 @@ random.seed(RANDOM_SEED)
 noise_dataset = SatelliteDataset('Train', (IMAGE_SIZE), transform=True, add_noise=True)
 clean_dataset = SatelliteDataset('Train', (IMAGE_SIZE), transform=True, add_noise=False)
 
+indices = list(range(len(noise_dataset)))
+random.shuffle(indices)
+
 train_size = int((1 - VAL_SPILIT - TEST_SPLIT) * len(noise_dataset))
 val_size = int(VAL_SPILIT * len(noise_dataset))
 test_size = len(noise_dataset) - train_size - val_size
 
-train_dataset, _ = random_split(noise_dataset, [train_size, len(noise_dataset) - train_size])
-_, val_dataset, test_dataset = random_split(clean_dataset, [len(clean_dataset) - val_size - test_size, val_size, test_size])
+train_indices = indices[:train_size]
+val_indices = indices[train_size:train_size+val_size]
+test_indices = indices[train_size+val_size:]
+
+train_dataset = Subset(noise_dataset, train_indices)
+val_dataset = Subset(clean_dataset, val_indices)
+test_dataset = Subset(clean_dataset, test_indices)
 
 train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
@@ -48,11 +51,9 @@ test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 ##################################################
 
 if MODEL == 'UNet':
-    def to_device(data, device):
-        if isinstance(data, (list,tuple)):
-            return [to_device(x, device) for x in data]
-        return data.to(device, non_blocking=True)
-    model = to_device(UNet(in_channels=3, out_channels=1, init_features=32), DEVICE)
+    model = UNet(in_channels=3, out_channels=1, init_features=32).to(DEVICE)
+elif MODEL == 'resUNet':
+    model = resUNet(in_channels=3, out_channels=1, init_features=32).to(DEVICE)
 elif MODEL == 'ResNet':
     pass
 
@@ -69,7 +70,7 @@ writer = SummaryWriter(log_dir=log_dir)
 for epoch in range(1, EPOCH + 1):
     # train
     model.train()
-
+    total_train_loss = 0.0
     progress_bar = tqdm(enumerate(train_dataloader), total=len(train_dataloader))
     for i, (images, labels) in progress_bar:
         images = images.to(DEVICE)
@@ -77,14 +78,23 @@ for epoch in range(1, EPOCH + 1):
 
         outputs = model(images)
         loss = criterion(outputs, labels)
+        total_train_loss += loss.item()
 
         optimizer.zero_grad()
         loss.backward()
+        # print('loss: ', loss.item())
+        # for name, param in model.named_parameters():
+        #     if param.grad is not None:
+        #         print(f"{name} grad norm: {param.grad.norm()}")
         optimizer.step()
 
-        progress_bar.set_description(f"Epoch {epoch}/{EPOCH}, Train Loss: {loss.item()}")
+    avg_train_loss = total_train_loss / len(train_dataloader)
+    writer.add_scalar('Loss/train', avg_train_loss, epoch)
 
-        writer.add_scalar('Loss/train', loss.item(), (epoch - 1) * len(train_dataloader) + i)
+    params = []
+    for param in model.parameters():
+        params += list(param.detach().cpu().numpy().flatten())
+    print(f"Epoch {epoch}/{EPOCH}, Mean Params: {np.mean(params):.4f}, Max Params: {np.max(params):.4f}, Min Params: {np.min(params):.4f}")
 
     # save
     if epoch % 10 == 0:
@@ -102,11 +112,12 @@ for epoch in range(1, EPOCH + 1):
 
             outputs = model(images)
             loss = criterion(outputs, labels)
-
             total_val_loss += loss.item()
 
-    avg_val_loss = total_val_loss / len(val_dataset)
+    avg_val_loss = total_val_loss / len(val_dataloader)
     writer.add_scalar('Loss/val', avg_val_loss, epoch)
+
+    print(f"Epoch {epoch}/{EPOCH}, Avg Val Loss: {avg_val_loss:.4f}, Avg Train Loss: {avg_train_loss:.4f}")
 
 # test
 model.eval()
